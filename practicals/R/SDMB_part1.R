@@ -17,16 +17,21 @@ library(blockCV)  # for block cross-validation
 
 # we need a data frame with presence/(pseudo)absence of records of a species and a set of environmental variables:
 
-dat <- read.csv("../data/mammal_data.csv")
+dat <- read.csv("/Users/heatherwelch/Dropbox/bayesian_workshop2021/IBSwkshp/practicals/data/mammal_data.csv")
+dat=df
 # presence/absence of records of non-flying terrestrial mammals on UTM 10x10 km2 grid cells of mainland Spain
 # source: Villares J.M. (2018) Inventario Espanol de Especies Terrestres (MAGRAMA). Version 1.4. Ministry of Agriculture, Food and Environment.
 # accessed from R via 'rgbif::occ_data' on 2021-03-23
 # you can find "species_names.csv" in the "data" folder
-
+library(zoo)
+dat=dat %>% mutate(day=yday(dt))
 head(dat)
 names(dat)
+#gbm.x=c("bathy_sd","eke","l.chl","mld","oxy200m","PPupper200m","sla","sst_sd","random","sst","bathy","day")
 spc_col <- 8  # a species' presence/absence column IN THIS DATASET (change as appropriate!)
 var_cols <- 66:85  # variables are in these columns IN THIS DATASET (change as appropriate!)
+spc_col <- 11  # a species' presence/absence column IN THIS DATASET (change as appropriate!)
+var_cols <- c(30,19,20,21,22,24,25,32,26,15,35)
 names(dat)[spc_col]  # check that it's OK
 names(dat)[var_cols]  # check that it's OK
 
@@ -35,10 +40,13 @@ myspecies <- names(dat)[spc_col]
 # if you have spatial coordinates in the data frame, map some species and variables to check everything's in place:
 dat_spatial <- dat
 coordinates(dat_spatial) <- dat_spatial[ , c("longitude", "latitude")]
+coordinates(dat_spatial) <- dat_spatial[ , c("lon", "lat")]
 crs(dat_spatial) <- "+proj=longlat"
 spplot(dat_spatial, zcol = myspecies, cex = 0.5)
 spplot(dat_spatial, zcol = "bio1", cex = 0.5)  # temperature
 spplot(dat_spatial, zcol = "bio12", cex = 0.5)  # precipitation
+spplot(dat_spatial, zcol = "adt_sd", cex = 0.5)  # temperature
+spplot(dat_spatial, zcol = "bathy_sd", cex = 0.5)  # precipitation
 # for the meanings of the 'bio' variables, see https://www.worldclim.org/data/bioclim.html
 
 
@@ -68,13 +76,42 @@ spplot(dat_spatial, zcol = "BART_P", cex = 0.5)
 # GET PREDICTIONS ON A RASTER STACK ####
 # (if you have also raster maps of your variables)
 
-var_stack <- stack(list.files("../data/wclim_spain", full.names = TRUE))
+var_stack <- stack(list.files("/Users/heatherwelch/Dropbox/bayesian_workshop2021/IBSwkshp/practicals/data/wclim_spain", full.names = TRUE))
+var_stack <- stack(list.files("/Users/heatherwelch/Dropbox/OLE/data/environmental_rasters1.25/2012-01-01", full.names = TRUE,pattern=".grd"))
+names_var=list.files("/Users/heatherwelch/Dropbox/OLE/data/environmental_rasters1.25/2012-09-01",pattern=".grd") %>% 
+  gsub(".grd","",.)
+names(var_stack)=names_var
+template=raster("/Users/heatherwelch/Dropbox/OLE/spatial_data/template.grd")
+library(sf)
+bbox=st_read("/Users/heatherwelch/Dropbox/OLE/bounding_boxes/species_03_22_21/black-footedAlbatross_TOPP.shp")
+var_stack2=var_stack %>% mask(.,bbox)
+var_stack=var_stack2
+a=crop(var_stack2,bbox)
+plot(a[[1:16]])
+plot(a[[16:22]])
 # citation for these data:
 # Fick S.E. & Hijmans R.J. (2017) Worldclim 2: New 1-km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37:4302-4315. Accessed from R via 'raster::getData' on 2021-03-23. Cut to study area using 'raster::crop' and 'raster::mask'.
 var_stack
 plot(var_stack)
 BART_P <- predict2.bart(mod_BART, x.layers = var_stack)  # can take time for large rasters!
+test=dismo::predict(mod_BART,var_stack)
 plot(BART_P)
+## predicting with missing data: https://onlinelibrary.wiley.com/doi/abs/10.1002/cjs.11248
+
+df_maphigh=rasterToPoints(BART_P)%>% as.data.frame()
+colnames(df_maphigh)=c("rows","cols","value")
+
+plot_sp=ggplot()+
+  geom_tile(data=df_maphigh,aes(x = rows, y = cols, fill=value))+
+  # geom_point(data=sp_dat,aes(x=lon,y=lat),color="red",size=.3)+
+  scale_fill_gradientn(colours = pals::parula(100),na.value="black")+
+  geom_polygon(data = fortify(maps::map("world2",plot=FALSE,fill=TRUE)), aes(x=long, y = lat, group=group),color="black",fill="grey")+
+  # geom_polygon(data = fortify(boxx,plot=FALSE,fill=TRUE), aes(x=long, y = lat, group=group),color="red",fill=NA)+
+  # geom_polygon(data=fortify(boxx,plot=F,fill=F), aes(x=long, y = lat, group=group),color="black",fill=NA,size=1)+
+  geom_sf(data=bbox,color="grey",fill=NA)+
+  theme_classic()+xlab(NULL)+ylab(NULL)+
+  coord_sf(xlim = c(180, 260), ylim = c(10,62),expand=F)+
+  # ggtitle(glue("{names_sp[ii]}_{datelist[i]} continuous"))
 
 # save the created objects to disk for future use:
 saveRDS(mod_BART, "mod_BART.rds")
@@ -138,8 +175,9 @@ names(dat)
 # if you have your variables as maps in a raster stack, you can calculate their range of spatial autocorrelation
 # but note that this can be too stringent, i.e. make blocks too large for the model training sets to contain sufficient information
 ?spatialAutoRange
-#sarange <- spatialAutoRange(var_stack)  # see the 'plots' pane
-#sarange$range
+#
+sarange <- spatialAutoRange(var_stack)  # see the 'plots' pane
+sarange$range
 
 # get spatial blocks of a given size (e.g. 150 km2):
 set.seed(321)  # set a seed of random numbers so next command yields the same result in different runs of the script
